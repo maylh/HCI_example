@@ -23,6 +23,7 @@ import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.widget.Toast;
+import android.widget.Button;
 import com.google.ar.core.Anchor;
 import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.Camera;
@@ -61,12 +62,13 @@ import javax.microedition.khronos.opengles.GL10;
  */
 public class DepthCodelabActivity extends AppCompatActivity implements GLSurfaceView.Renderer {
   private static final String TAG = DepthCodelabActivity.class.getSimpleName();
-
+  // Add this line at the top of the file, with the other messages.
+  private static final String DEPTH_NOT_AVAILABLE_MESSAGE = "[Depth not supported on this device]";
   // Rendering. The Renderers are created here, and initialized when the GL surface is created.
   private GLSurfaceView surfaceView;
 
   private boolean installRequested;
-
+  private boolean isDepthSupported;
   private Session session;
   private final SnackbarHelper messageSnackbarHelper = new SnackbarHelper();
   private DisplayRotationHelper displayRotationHelper;
@@ -85,7 +87,9 @@ public class DepthCodelabActivity extends AppCompatActivity implements GLSurface
   // Anchors created from taps used for object placing with a given color.
   private static final float[] OBJECT_COLOR = new float[] {139.0f, 195.0f, 74.0f, 255.0f};
   private final ArrayList<Anchor> anchors = new ArrayList<>();
-
+  private boolean showDepthMap = false;
+  // step 6 추가부분
+  private final DepthTextureHandler depthTexture = new DepthTextureHandler();
   @Override
   protected void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
@@ -106,6 +110,18 @@ public class DepthCodelabActivity extends AppCompatActivity implements GLSurface
     surfaceView.setWillNotDraw(false);
 
     installRequested = false;
+
+    final Button toggleDepthButton = (Button) findViewById(R.id.toggle_depth_button);
+    toggleDepthButton.setOnClickListener(
+            view -> {
+              if (isDepthSupported) {
+                showDepthMap = !showDepthMap;
+                toggleDepthButton.setText(showDepthMap ? R.string.hide_depth : R.string.show_depth);
+              } else {
+                showDepthMap = false;
+                toggleDepthButton.setText(R.string.depth_not_available);
+              }
+            });
   }
 
   @Override
@@ -133,6 +149,14 @@ public class DepthCodelabActivity extends AppCompatActivity implements GLSurface
 
         // Creates the ARCore session.
         session = new Session(/* context= */ this);
+        Config config = session.getConfig();
+        isDepthSupported = session.isDepthModeSupported(Config.DepthMode.AUTOMATIC);
+        if (isDepthSupported) {
+          config.setDepthMode(Config.DepthMode.AUTOMATIC);
+        } else {
+          config.setDepthMode(Config.DepthMode.DISABLED);
+        }
+        session.configure(config);
 
       } catch (UnavailableArcoreNotInstalledException
           | UnavailableUserDeclinedInstallationException e) {
@@ -208,10 +232,16 @@ public class DepthCodelabActivity extends AppCompatActivity implements GLSurface
   public void onSurfaceCreated(GL10 gl, EGLConfig config) {
     GLES20.glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
 
+    // step 6 추가
+    depthTexture.createOnGlThread();
+
+
     // Prepare the rendering objects. This involves reading shaders, so may throw an IOException.
     try {
       // Create the texture and pass it to ARCore session to be filled during update().
       backgroundRenderer.createOnGlThread(/*context=*/ this);
+      backgroundRenderer.createDepthShaders(/*context=*/ this, depthTexture.getDepthTexture());
+
 
       virtualObject.createOnGlThread(/*context=*/ this, "models/andy.obj", "models/andy.png");
       virtualObject.setMaterialProperties(0.0f, 2.0f, 0.5f, 6.0f);
@@ -252,6 +282,10 @@ public class DepthCodelabActivity extends AppCompatActivity implements GLSurface
 
       // If frame is ready, render camera preview image to the GL surface.
       backgroundRenderer.draw(frame);
+      // Add this snippet just under backgroundRenderer.draw(frame);
+      if (showDepthMap) {
+        backgroundRenderer.drawDepth(frame);
+      }
 
       // Keep the screen unlocked while tracking, but allow it to lock when tracking stops.
       trackingStateHelper.updateKeepScreenOnFlag(camera.getTrackingState());
@@ -284,6 +318,11 @@ public class DepthCodelabActivity extends AppCompatActivity implements GLSurface
       } else {
         messageToShow = SEARCHING_PLANE_MESSAGE;
       }
+
+      // Add this if-statement above messageSnackbarHelper.showMessage(this, messageToShow).
+      if (!isDepthSupported) {
+        messageToShow += "\n" + DEPTH_NOT_AVAILABLE_MESSAGE;
+      }
       messageSnackbarHelper.showMessage(this, messageToShow);
 
       // Visualize anchors created by touch.
@@ -299,6 +338,11 @@ public class DepthCodelabActivity extends AppCompatActivity implements GLSurface
         // Update and draw the model and its shadow.
         virtualObject.updateModelMatrix(anchorMatrix, scaleFactor);
         virtualObject.draw(viewmtx, projmtx, colorCorrectionRgba, OBJECT_COLOR);
+      }
+
+      // Add this just after "frame" is created inside onDrawFrame().
+      if (isDepthSupported) {
+        depthTexture.update(frame);
       }
 
     } catch (Throwable t) {
